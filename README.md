@@ -1,28 +1,22 @@
-## Correção V1.2.1
+# CRM CONVENIÊNCIA V1.3.0 — GitHub / Cloudflare Pages / D1
 
-Corrigida a inserção de produtos avulsos no PDV: salvar um item fora de estoque não reinicializa o carrinho; a venda pode ser confirmada mesmo sem outros produtos cadastrados. **Não exige migração nova** além das tabelas V1.2.0 já instaladas.
+## Atualização do projeto existente
+1. Antes de atualizar, exporte um backup do D1.
+2. No Cloudflare D1 `crm-conveniencia-db` execute `migracao_v1_3.sql` no Console SQL; ela cria `business_settings` e preserva todas as tabelas anteriores. Caso o console não aceite vários comandos, execute o CREATE TABLE e depois o INSERT OR IGNORE.
+3. Extraia o ZIP e substitua o conteúdo na raiz do repositório do GitHub. Commit na branch main.
+4. Aguarde o Cloudflare Pages publicar e faça Ctrl+F5 no notebook ou atualize o navegador Android.
+5. Confira Configurações > Configurações do meu negócio e salve os dados.
 
-# CRM CONVENIÊNCIA · v1.2.1
+## Novidades
+- Menu lateral em seções expansíveis VENDAS, ESTOQUE, CADASTROS, FINANCEIRO, CONFIGURAÇÕES; as subseções deslocam os outros itens.
+- Ícones SVG desenhados, área touch para Android e tablet.
+- Configurações do negócio persistidas em D1: nome, razão social, CNPJ, telefone, endereço e logo compactada.
+- Cabeçalhos de impressão/PDF com os dados configurados e layout azul royal/prata; comanda gerada como PDF com cabeçalho, rodapé e paginação.
+- SAIR abre confirmação, exibe TEJE LIVRE! e mostra tela de saída com Voltar ao CRM. Não é logout de autenticação: o projeto não tem login e continua acessível pelo link.
+- Operações de gravação já confirmadas permanecem no D1. Não é possível garantir salvar formulário que não foi submetido; esse caso é avisado ao sair.
 
-Projeto para **Cloudflare Pages Functions + Cloudflare D1**. Não publique o cadastro de clientes em produção sem proteger a aplicação com autenticação (ex.: Cloudflare Access). O link sozinho não oferece segurança.
+## Segurança
+⚠️ Esta versão ainda não tem autenticação. Não exponha dados pessoais e financeiros em produção sem restringir acesso (Cloudflare Access, por exemplo). O botão SAIR não protege os dados.
 
-## Atualização de v1.1.0 para v1.2.1 (não apagar dados)
-
-1. **Faça backup do D1** antes de alterações. No D1, use exportação/backup pelo painel, se disponível. A ferramenta de backup JSON do sistema é complementar.
-2. No banco `crm-conveniencia-db` abra o **Console** e execute **`migracao_v1_2.sql`** (cria tabelas de pagamentos parciais e itens avulsos). Se a interface do console recusar múltiplos comandos, execute cada `CREATE TABLE` e `CREATE INDEX` individualmente.
-3. Se os produtos reais ainda não aparecem, execute **`atualizar_d1_produtos.sql`** e, depois, **`atualizar_d1_doses.sql`** no mesmo Console. Esses scripts não duplicam registros existentes.
-4. Execute **`atualizar_d1_custos_v1_2.sql`** para custos provisórios. Só altera produtos com custo igual a zero. Atenção: destilados usam custo por ml arredondado.
-5. Opcional: `arquivar_modelos_opcional.sql` desativa os 10 modelos fictícios (não apaga histórico).
-6. Extraia o ZIP e envie **o conteúdo**, não a pasta externa, à raiz do repositório GitHub `claudiomaciel`; confirme substituição de arquivos existentes e faça commit.
-7. Cloudflare Pages deve manter o binding D1 com nome **`DB`** apontando a `crm-conveniencia-db`. Verifique `https://crm-conveniencia.pages.dev/api/health` e abra o sistema após novo deploy.
-
-## Funcionalidades novas
-- Venda rápida permite produto avulso sem estoque, registrado em `manual_sale_items` (não mexe no inventário).
-- Estoque em submenu por categoria; doses usam apresentações, com baixa em ml no destilado.
-- Comanda mostra valores pagos, saldo; pagamentos parciais registrados em `order_payments`, `cash_entries`. Fechamento com fiado lança somente saldo restante.
-- Comandas abertas e saldo devedor aparecem no contas a receber. Comandas antigas ficam consultáveis e PDF é gerado no dispositivo para download/compartilhamento.
-- Caixa: **Alterar valores em caixa** grava ajuste compensatório justificado, sem editar operações antigas.
-- Backup geral JSON exporta todas as tabelas de negócio da versão, não restaura automaticamente.
-- Interface Android: menu responsivo, ícones SVG, azul royal/prata, assinatura Stratéchne.
-
-**Observações:** PDF é exportado de forma simples, sem depender de bibliotecas externas. O caixa único é um resumo de movimentos, não uma conciliação bancária. Operações ainda exigem conexão à internet e a importação SQL é manual; commit GitHub não executa migrações de D1.
+## Nota sobre PDFs
+Os relatórios de tabelas e fechamento usam a impressão do navegador com estilo e logomarca, permitindo Salvar como PDF. O PDF compartilhável de comanda usa layout próprio, com nome/endereço/telefone em texto; a imagem da logomarca aparece nos relatórios impressos e a logomarca poderá ser adicionada ao PDF compartilhável numa melhoria futura.

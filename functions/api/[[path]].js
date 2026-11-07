@@ -42,6 +42,13 @@ export async function onRequest(context){
   let url=new URL(context.request.url);
   let b={};if(method!=='GET'){try{b=await context.request.json()}catch{return fail('Corpo JSON inválido')}}
   try{
+    if(path==='business'&&method==='GET'){let row=await get(db,'SELECT name,legal_name,cnpj,phone,address,logo FROM business_settings WHERE id=1');return json(row||{name:'CRM CONVENIÊNCIA',legal_name:'',cnpj:'',phone:'(42) 99999-4679',address:'Rua Aderly Turek, 81 - Cará-Cará, Ponta Grossa - PR, 84033-101',logo:''});}
+    if(path==='business'&&method==='POST'){
+      let name=str(b.name,120);if(!name)throw Error('Informe o nome da empresa');let logo=String(b.logo||'');
+      if(logo&&(!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(logo)||logo.length>220000))throw Error('Logomarca inválida ou muito grande');
+      await run(db,`INSERT INTO business_settings(id,name,legal_name,cnpj,phone,address,logo,updated_at) VALUES(1,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET name=excluded.name,legal_name=excluded.legal_name,cnpj=excluded.cnpj,phone=excluded.phone,address=excluded.address,logo=excluded.logo,updated_at=CURRENT_TIMESTAMP`,name,str(b.legal_name,180),str(b.cnpj,20),str(b.phone,35),str(b.address,350),logo);
+      return json(await get(db,'SELECT name,legal_name,cnpj,phone,address,logo FROM business_settings WHERE id=1'));
+    }
     if(path==='health'&&method==='GET'){await get(db,'SELECT 1 as ok');return json({ok:true});}
     if(path==='bootstrap'&&method==='GET'){
       let [products,customers,orders,payables,balances]=await Promise.all([
@@ -146,7 +153,7 @@ export async function onRequest(context){
     }
     if(path==='receivables/orders'&&method==='GET')return json(await all(db,"SELECT o.id,o.customer_id,c.name customer_name,o.status,o.total,COALESCE((SELECT SUM(amount) FROM order_payments WHERE order_id=o.id),0) paid, o.total-COALESCE((SELECT SUM(amount) FROM order_payments WHERE order_id=o.id),0) balance FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.status='open' ORDER BY o.id DESC"));
     if(path==='backup'&&method==='GET'){
-      const names=['customers','products','presentations','recipes','orders','sales','sale_items','manual_sale_items','order_payments','stock_movements','cash_entries','customer_ledger','payables','suppliers'];const data={format:'crm-conveniencia-backup',version:'1.2.0',created_at:new Date().toISOString(),tables:{}};
+      const names=['customers','products','presentations','recipes','orders','sales','sale_items','manual_sale_items','order_payments','stock_movements','cash_entries','customer_ledger','payables','suppliers','business_settings'];const data={format:'crm-conveniencia-backup',version:'1.2.0',created_at:new Date().toISOString(),tables:{}};
       for(const name of names)data.tables[name]=await all(db,`SELECT * FROM ${name}`);
       return json(data);
     }
