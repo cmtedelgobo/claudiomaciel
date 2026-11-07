@@ -1,8 +1,12 @@
-# CRM CONVENIÊNCIA · v1.2.0
+## Correção V1.2.1
+
+Corrigida a inserção de produtos avulsos no PDV: salvar um item fora de estoque não reinicializa o carrinho; a venda pode ser confirmada mesmo sem outros produtos cadastrados. **Não exige migração nova** além das tabelas V1.2.0 já instaladas.
+
+# CRM CONVENIÊNCIA · v1.2.1
 
 Projeto para **Cloudflare Pages Functions + Cloudflare D1**. Não publique o cadastro de clientes em produção sem proteger a aplicação com autenticação (ex.: Cloudflare Access). O link sozinho não oferece segurança.
 
-## Atualização de v1.1.0 para v1.2.0 (não apagar dados)
+## Atualização de v1.1.0 para v1.2.1 (não apagar dados)
 
 1. **Faça backup do D1** antes de alterações. No D1, use exportação/backup pelo painel, se disponível. A ferramenta de backup JSON do sistema é complementar.
 2. No banco `crm-conveniencia-db` abra o **Console** e execute **`migracao_v1_2.sql`** (cria tabelas de pagamentos parciais e itens avulsos). Se a interface do console recusar múltiplos comandos, execute cada `CREATE TABLE` e `CREATE INDEX` individualmente.
