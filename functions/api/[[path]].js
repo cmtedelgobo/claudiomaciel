@@ -45,7 +45,7 @@ export async function onRequest(context){
     if(path==='health'&&method==='GET'){await get(db,'SELECT 1 as ok');return json({ok:true});}
     if(path==='bootstrap'&&method==='GET'){
       let [products,customers,orders,payables,balances]=await Promise.all([
-        all(db,'SELECT * FROM products ORDER BY favorite DESC,name'),all(db,'SELECT c.*,COALESCE((SELECT SUM(amount) FROM customer_ledger l WHERE l.customer_id=c.id),0) debt FROM customers c ORDER BY name'),all(db,"SELECT o.*,c.name customer_name FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.status='open' ORDER BY o.id DESC"),all(db,'SELECT * FROM payables ORDER BY status,due_date,id DESC'),get(db,"SELECT COALESCE(SUM(CASE WHEN type IN ('income','opening') THEN amount ELSE -amount END),0) total FROM cash_entries")]);
+        all(db,'SELECT * FROM products ORDER BY favorite DESC,name'),all(db,'SELECT c.*,COALESCE((SELECT SUM(amount) FROM customer_ledger l WHERE l.customer_id=c.id),0) debt FROM customers c ORDER BY name'),all(db,"SELECT o.*,c.name customer_name,CASE WHEN o.status='paid' THEN o.total ELSE COALESCE((SELECT SUM(amount) FROM order_payments WHERE order_id=o.id),0) END paid_amount FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.status='open' ORDER BY o.id DESC"),all(db,'SELECT * FROM payables ORDER BY status,due_date,id DESC'),get(db,"SELECT COALESCE(SUM(CASE WHEN type IN ('income','opening') THEN amount ELSE -amount END),0) total FROM cash_entries")]);
       return json({products,customers,orders,payables,balance:balances?.total||0});
     }
     if(path==='products'&&method==='POST'){
@@ -112,7 +112,7 @@ export async function onRequest(context){
       let id=idOf(b.customer_id),c=await get(db,'SELECT id FROM customers WHERE id=?',id);if(!c)throw Error('Cliente não encontrado');
       let r=await run(db,"INSERT INTO orders(customer_id) VALUES(?)",id);return json({id:r.meta.last_row_id});
     }
-    if(path==='order-items'&&method==='GET')return json(await all(db,'SELECT * FROM sale_items WHERE order_id=? ORDER BY id',idOf(url.searchParams.get('order_id'))));
+    if(path==='order-items'&&method==='GET')return json(await all(db,'SELECT * FROM sale_items WHERE order_id=? OR sale_id IN (SELECT id FROM sales WHERE order_id=?) ORDER BY id',idOf(url.searchParams.get('order_id')),idOf(url.searchParams.get('order_id'))));
     if(path==='order-items'&&method==='POST'){
       let oid=idOf(b.order_id),o=await get(db,'SELECT * FROM orders WHERE id=?',oid);if(o?.status!=='open')throw Error('Comanda não está aberta');
       let p=await components(db,idOf(b.product_id),b.presentation_id? idOf(b.presentation_id):null,n(b.quantity,1));
@@ -125,31 +125,58 @@ export async function onRequest(context){
     }
     if(path==='order-items'&&method==='DELETE'){
       let iid=idOf(b.item_id),item=await get(db,'SELECT i.*,o.status FROM sale_items i JOIN orders o ON o.id=i.order_id WHERE i.id=?',iid);if(item?.status!=='open')throw Error('Item não pode ser removido');
-      let parts=await itemParts(db,item);await db.batch([sql(db,'DELETE FROM sale_items WHERE id=?',iid),sql(db,'UPDATE orders SET total=total-? WHERE id=?',item.quantity*item.unit_price,item.order_id),...inventoryStmts(db,parts,1,'Estorno de comanda',`order:${item.order_id}`)]);return json({ok:true});
+      let paid=await get(db,'SELECT COALESCE(SUM(amount),0) v FROM order_payments WHERE order_id=?',item.order_id);let original=await get(db,'SELECT total FROM orders WHERE id=?',item.order_id);if(original.total-item.quantity*item.unit_price<paid.v)throw Error('Não é possível remover item: valor ficaria abaixo do que foi pago');let parts=await itemParts(db,item);await db.batch([sql(db,'DELETE FROM sale_items WHERE id=?',iid),sql(db,'UPDATE orders SET total=total-? WHERE id=?',item.quantity*item.unit_price,item.order_id),...inventoryStmts(db,parts,1,'Estorno de comanda',`order:${item.order_id}`)]);return json({ok:true});
     }
     if(path==='orders/cancel'&&method==='POST'){
       let oid=idOf(b.order_id),o=await get(db,'SELECT * FROM orders WHERE id=?',oid);if(o?.status!=='open')throw Error('Comanda não está aberta');
+      const cp=await get(db,'SELECT COALESCE(SUM(amount),0) v FROM order_payments WHERE order_id=?',oid);if(cp.v>0)throw Error('Comanda com pagamento não pode ser cancelada sem estorno manual.');
       let items=await all(db,'SELECT * FROM sale_items WHERE order_id=?',oid),parts=[];for(const item of items)parts.push(...await itemParts(db,item));
       await db.batch([sql(db,"UPDATE orders SET status='cancelled',closed_at=CURRENT_TIMESTAMP WHERE id=?",oid),...inventoryStmts(db,parts,1,'Comanda cancelada',`order:${oid}`)]);return json({ok:true});
     }
+    if(path==='orders/all'&&method==='GET')return json(await all(db,"SELECT o.*,c.name customer_name,CASE WHEN o.status='paid' THEN o.total ELSE COALESCE((SELECT SUM(amount) FROM order_payments WHERE order_id=o.id),0) END paid_amount FROM orders o JOIN customers c ON c.id=o.customer_id ORDER BY o.id DESC LIMIT 500"));
+    if(path==='orders/payments'&&method==='GET')return json(await all(db,'SELECT * FROM order_payments WHERE order_id=? ORDER BY id',idOf(url.searchParams.get('order_id'))));
+    if(path==='orders/payment'&&method==='POST'){
+      const oid=idOf(b.order_id),amount=n(b.amount),payMethod=str(b.method),note=str(b.note,300);
+      if(amount<=0||!['cash','pix','debit','credit'].includes(payMethod))throw Error('Pagamento inválido');
+      const o=await get(db,"SELECT * FROM orders WHERE id=? AND status='open'",oid);if(!o)throw Error('Comanda não está aberta');
+      const old=await get(db,'SELECT COALESCE(SUM(amount),0) total FROM order_payments WHERE order_id=?',oid);
+      if(amount>o.total-old.total)throw Error('Valor supera o saldo pendente da comanda');
+      await db.batch([sql(db,'INSERT INTO order_payments(order_id,amount,method,note) VALUES(?,?,?,?)',oid,amount,payMethod,note),sql(db,'INSERT INTO cash_entries(customer_id,type,method,amount,note) VALUES(?,?,?,?,?)',o.customer_id,'income',payMethod,amount,'Pagamento parcial da comanda #'+oid+(note?' — '+note:''))]);
+      return json({ok:true,paid:old.total+amount,balance:o.total-old.total-amount});
+    }
+    if(path==='receivables/orders'&&method==='GET')return json(await all(db,"SELECT o.id,o.customer_id,c.name customer_name,o.status,o.total,COALESCE((SELECT SUM(amount) FROM order_payments WHERE order_id=o.id),0) paid, o.total-COALESCE((SELECT SUM(amount) FROM order_payments WHERE order_id=o.id),0) balance FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.status='open' ORDER BY o.id DESC"));
+    if(path==='backup'&&method==='GET'){
+      const names=['customers','products','presentations','recipes','orders','sales','sale_items','manual_sale_items','order_payments','stock_movements','cash_entries','customer_ledger','payables','suppliers'];const data={format:'crm-conveniencia-backup',version:'1.2.0',created_at:new Date().toISOString(),tables:{}};
+      for(const name of names)data.tables[name]=await all(db,`SELECT * FROM ${name}`);
+      return json(data);
+    }
     if(path==='orders/close'&&method==='POST'){
-      let oid=idOf(b.order_id),o=await get(db,'SELECT * FROM orders WHERE id=?',oid);if(o?.status!=='open')throw Error('Comanda não está aberta');
-      let items=await all(db,'SELECT * FROM sale_items WHERE order_id=?',oid);if(!items.length)throw Error('Comanda vazia');
+      const oid=idOf(b.order_id),o=await get(db,'SELECT * FROM orders WHERE id=?',oid);if(o?.status!=='open')throw Error('Comanda não está aberta');
+      const items=await all(db,'SELECT * FROM sale_items WHERE order_id=?',oid);if(!items.length)throw Error('Comanda vazia');
+      const pm=await get(db,'SELECT COALESCE(SUM(amount),0) paid,COUNT(*) count FROM order_payments WHERE order_id=?',oid);
+      const rest=o.total-pm.paid;if(rest<0)throw Error('Pagamentos excedem o valor da comanda');
       let method=str(b.method||'cash');if(!['cash','pix','debit','credit','fiado'].includes(method))throw Error('Forma de pagamento inválida');
-      if(method==='fiado'){
-        let c=await get(db,'SELECT * FROM customers WHERE id=?',o.customer_id),d=await get(db,'SELECT COALESCE(SUM(amount),0) debt FROM customer_ledger WHERE customer_id=?',o.customer_id);
-        if(c.blocked||d.debt+o.total>c.credit_limit)throw Error('Limite de fiado excedido ou cliente bloqueado');
+      const c=await get(db,'SELECT * FROM customers WHERE id=?',o.customer_id);
+      if(rest>0&&method==='fiado'){
+        let d=await get(db,'SELECT COALESCE(SUM(amount),0) debt FROM customer_ledger WHERE customer_id=?',o.customer_id);
+        if(c.blocked||d.debt+rest>c.credit_limit)throw Error('Limite de fiado excedido ou cliente bloqueado');
       }
-      await db.batch([sql(db,'INSERT INTO sales(order_id,customer_id,total,payment_method) VALUES(?,?,?,?)',oid,o.customer_id,o.total,method),sql(db,"UPDATE orders SET status=?,closed_at=CURRENT_TIMESTAMP WHERE id=?",method==='fiado'?'credit':'paid',oid),sql(db,'UPDATE sale_items SET sale_id=(SELECT id FROM sales WHERE order_id=? ORDER BY id DESC LIMIT 1),order_id=NULL WHERE order_id=?',oid,oid),...(method==='fiado'?[sql(db,'INSERT INTO customer_ledger(customer_id,sale_id,amount,description,due_date) VALUES(?,(SELECT id FROM sales WHERE order_id=? ORDER BY id DESC LIMIT 1),?,?,?)',o.customer_id,oid,o.total,'Fiado comanda #'+oid,validDate(b.due_date)?b.due_date:null)]:[sql(db,'INSERT INTO cash_entries(sale_id,customer_id,type,method,amount,note) VALUES((SELECT id FROM sales WHERE order_id=? ORDER BY id DESC LIMIT 1),?,?,?,?,?)',oid,o.customer_id,'income',method,o.total,'Comanda #'+oid)])]);return json({ok:true});
+      const paidType=rest===0?'paid':method==='fiado'?'credit':'paid';
+      const stmts=[sql(db,'INSERT INTO sales(order_id,customer_id,total,payment_method) VALUES(?,?,?,?)',oid,o.customer_id,o.total,rest&&method==='fiado'?'fiado':pm.paid?'mixed':method),sql(db,'UPDATE orders SET status=?,closed_at=CURRENT_TIMESTAMP WHERE id=?',paidType,oid),sql(db,'UPDATE sale_items SET sale_id=(SELECT id FROM sales WHERE order_id=? ORDER BY id DESC LIMIT 1),order_id=NULL WHERE order_id=?',oid,oid)];
+      if(rest>0&&method==='fiado')stmts.push(sql(db,'INSERT INTO customer_ledger(customer_id,sale_id,amount,description,due_date) VALUES(?,(SELECT id FROM sales WHERE order_id=? ORDER BY id DESC LIMIT 1),?,?,?)',o.customer_id,oid,rest,'Fiado comanda #'+oid,validDate(b.due_date)?b.due_date:null));
+      else if(rest>0){stmts.push(sql(db,'INSERT INTO cash_entries(customer_id,type,method,amount,note) VALUES(?,?,?,?,?)',o.customer_id,'income',method,rest,'Quitação da comanda #'+oid));stmts.push(sql(db,'INSERT INTO order_payments(order_id,amount,method,note) VALUES(?,?,?,?)',oid,rest,method,'Quitação no fechamento'));}
+      await db.batch(stmts);return json({ok:true,paid:pm.paid+(method==='fiado'?0:rest),balance:method==='fiado'?rest:0});
     }
     if(path==='sales/quick'&&method==='POST'){
-      if(!Array.isArray(b.items)||!b.items.length||b.items.length>100)throw Error('Adicione produtos');let method=str(b.method);
+      if(!Array.isArray(b.items)||b.items.length>100)throw Error('Itens inválidos');let manual=Array.isArray(b.manual)?b.manual:[];if(!b.items.length&&!manual.length)throw Error('Adicione produtos');if(manual.length>100)throw Error('Muitos itens avulsos');let method=str(b.method);
       if(!['cash','pix','debit','credit'].includes(method))throw Error('Pagamento inválido');
       let priced=[],sum=0,parts=[];
       for(let i of b.items){let p=await components(db,idOf(i.product_id),i.presentation_id?idOf(i.presentation_id):null,n(i.quantity));priced.push(p);sum+=p.unitPrice*p.quantity;parts.push(...p.components);}
+      let manualItems=[];for(const i of manual){let name=str(i.name),quantity=n(i.qty),price=n(i.price);if(!name||quantity<1||quantity>10000||price<=0||price>100000000)throw Error('Produto avulso inválido');manualItems.push({name,quantity,price});sum+=quantity*price;}if(sum>2000000000)throw Error('Valor total excede o limite');
       const need=new Map();for(let v of parts)need.set(v.id,(need.get(v.id)||0)+v.qty);
       for(let [id,qty] of need){let product=await get(db,'SELECT name,stock FROM products WHERE id=?',id);if(product.stock<qty)throw Error('Estoque insuficiente: '+product.name);}
       const statements=[sql(db,'INSERT INTO sales(total,payment_method) VALUES(?,?)',sum,method)];
+      for(let i of manualItems)statements.push(sql(db,'INSERT INTO manual_sale_items(sale_id,name,quantity,unit_price,unit_cost) VALUES((SELECT MAX(id) FROM sales),?,?,?,0)',i.name,i.quantity,i.price));
       for(let p of priced)statements.push(sql(db,'INSERT INTO sale_items(sale_id,product_id,presentation_id,name,quantity,unit_price,unit_cost) VALUES((SELECT MAX(id) FROM sales),?,?,?,?,?,?)',p.p.id,p.pres?.id||null,p.pres?p.p.name+' — '+p.pres.name:p.p.name,p.quantity,p.unitPrice,p.unitCost));
       statements.push(sql(db,'INSERT INTO cash_entries(sale_id,type,method,amount,note) VALUES((SELECT MAX(id) FROM sales),?,?,?,?)','income',method,sum,'Venda rápida'));
       statements.push(...inventoryStmts(db,Array.from(need).map(([id,qty])=>({id,qty})),-1,'Venda rápida','PDV'));
@@ -166,9 +193,14 @@ export async function onRequest(context){
       await db.batch(stmts);return json({ok:true});
     }
     if(path==='customers/pay'&&method==='POST'){
-      let cid=idOf(b.customer_id),amount=n(b.amount),method=str(b.method||'pix');if(amount<=0||!['cash','pix','debit','credit'].includes(method))throw Error('Recebimento inválido');
-      let d=await get(db,'SELECT COALESCE(SUM(amount),0) debt FROM customer_ledger WHERE customer_id=?',cid);if(!d||amount>d.debt)throw Error('Valor maior que o saldo devedor');
-      await db.batch([sql(db,'INSERT INTO customer_ledger(customer_id,amount,description) VALUES(?,?,?)',cid,-amount,'Pagamento de fiado'),sql(db,'INSERT INTO cash_entries(customer_id,type,method,amount,note) VALUES(?,?,?,?,?)',cid,'income',method,amount,'Recebimento de fiado')]);return json({ok:true});
+      const cid=idOf(b.customer_id),amount=n(b.amount),method=str(b.method||'pix');if(amount<=0||!['cash','pix','debit','credit'].includes(method))throw Error('Recebimento inválido');
+      const debt=await get(db,'SELECT COALESCE(SUM(amount),0) debt FROM customer_ledger WHERE customer_id=?',cid);if(!debt||amount>debt.debt)throw Error('Valor maior que o saldo devedor');
+      let still=amount,stmts=[];
+      const sales=await all(db,"SELECT s.id,s.order_id,COALESCE(SUM(l.amount),0) remaining FROM sales s JOIN customer_ledger l ON l.sale_id=s.id WHERE s.customer_id=? AND s.payment_method='fiado' AND s.status='active' GROUP BY s.id,s.order_id HAVING remaining>0 ORDER BY s.id",cid);
+      for(const sale of sales){if(!still)break;let paid=Math.min(still,sale.remaining);stmts.push(sql(db,'INSERT INTO customer_ledger(customer_id,sale_id,amount,description) VALUES(?,?,?,?)',cid,sale.id,-paid,'Recebimento fiado comanda #'+sale.order_id));if(paid===sale.remaining&&sale.order_id)stmts.push(sql(db,"UPDATE orders SET status='paid' WHERE id=? AND status='credit'",sale.order_id));still-=paid;}
+      if(still>0)stmts.push(sql(db,'INSERT INTO customer_ledger(customer_id,amount,description) VALUES(?,?,?)',cid,-still,'Pagamento de fiado anterior'));
+      stmts.push(sql(db,'INSERT INTO cash_entries(customer_id,type,method,amount,note) VALUES(?,?,?,?,?)',cid,'income',method,amount,'Recebimento de fiado'));
+      await db.batch(stmts);return json({ok:true});
     }
     if(path==='payables'&&method==='POST'){
       if(!str(b.description)||!validDate(b.due_date)||n(b.amount)<=0)throw Error('Despesa: descrição, vencimento e valor obrigatórios');
@@ -178,6 +210,15 @@ export async function onRequest(context){
       let id=idOf(b.id),amount=n(b.amount),method=str(b.method||'pix');let p=await get(db,'SELECT * FROM payables WHERE id=?',id);if(!p||p.status==='paid'||amount<=0||amount>p.amount-p.paid_amount)throw Error('Pagamento inválido');
       let newPaid=p.paid_amount+amount;
       await db.batch([sql(db,'UPDATE payables SET paid_amount=?,status=? WHERE id=?',newPaid,newPaid===p.amount?'paid':'open',id),sql(db,'INSERT INTO cash_entries(payable_id,type,method,amount,note) VALUES(?,?,?,?,?)',id,'expense',method,amount,p.description)]);return json({ok:true});
+    }
+    if(path==='cash/adjust'&&method==='POST'){
+      const target=n(b.target),reason=str(b.reason,400),method=str(b.method||'cash');
+      if(!Number.isSafeInteger(Number(b.target))||target<0||target>1000000000||reason.length<6)throw Error('Informe novo saldo e justificativa de pelo menos 6 caracteres');
+      if(!['cash','pix','debit','credit'].includes(method))throw Error('Forma inválida');
+      const current=await get(db,"SELECT COALESCE(SUM(CASE WHEN type IN ('income','opening') THEN amount ELSE -amount END),0) balance FROM cash_entries");
+      const delta=target-current.balance;if(!delta)return json({ok:true,delta:0});
+      await run(db,'INSERT INTO cash_entries(type,method,amount,note) VALUES(?,?,?,?)',delta>0?'income':'expense',method,Math.abs(delta),'AJUSTE MANUAL: '+reason+' | Saldo anterior '+current.balance+' | Novo saldo '+target);
+      return json({ok:true,delta});
     }
     if(path==='cash'&&method==='POST'){
       let amount=n(b.amount),type=str(b.type),method=str(b.method||'cash');if(amount<=0||!['opening','income','expense','adjustment'].includes(type))throw Error('Movimentação inválida');
@@ -191,7 +232,7 @@ export async function onRequest(context){
       let month=str(url.searchParams.get('month'));if(!monthValid(month))throw Error('Mês inválido');let start=month+'-01',end=new Date(Date.UTC(+month.slice(0,4),+month.slice(5,7),1)).toISOString().slice(0,10);
       let [sales,items,cash,payables,debts]=await Promise.all([
         get(db,"SELECT COALESCE(SUM(total),0) gross,COUNT(*) count,COALESCE(SUM(CASE WHEN payment_method='fiado' THEN total ELSE 0 END),0) credit FROM sales WHERE status='active' AND date(created_at)>=? AND date(created_at)<?",start,end),
-        all(db,"SELECT i.name, SUM(i.quantity) qty,SUM(i.quantity*i.unit_price) revenue,SUM(i.quantity*i.unit_cost) cost FROM sale_items i JOIN sales s ON s.id=i.sale_id WHERE s.status='active' AND date(s.created_at)>=? AND date(s.created_at)<? GROUP BY i.name ORDER BY qty DESC",start,end),
+        all(db,"SELECT name,SUM(qty) qty,SUM(revenue) revenue,SUM(cost) cost FROM (SELECT i.name,i.quantity qty,i.quantity*i.unit_price revenue,i.quantity*i.unit_cost cost FROM sale_items i JOIN sales s ON s.id=i.sale_id WHERE s.status='active' AND date(s.created_at)>=? AND date(s.created_at)<? UNION ALL SELECT m.name||' (avulso)',m.quantity,m.quantity*m.unit_price,m.quantity*m.unit_cost FROM manual_sale_items m JOIN sales s ON s.id=m.sale_id WHERE s.status='active' AND date(s.created_at)>=? AND date(s.created_at)<?) GROUP BY name ORDER BY qty DESC",start,end,start,end),
         get(db,"SELECT COALESCE(SUM(CASE WHEN type IN ('income','opening') THEN amount ELSE -amount END),0) net,COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0) income,COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0) expense FROM cash_entries WHERE date(created_at)>=? AND date(created_at)<?",start,end),
         get(db,'SELECT COALESCE(SUM(amount),0) obligations,COALESCE(SUM(paid_amount),0) paid FROM payables WHERE due_date>=? AND due_date<?',start,end),
         get(db,'SELECT COALESCE(SUM(amount),0) balance FROM customer_ledger')]);

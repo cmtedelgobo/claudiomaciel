@@ -51,7 +51,7 @@ WITH incoming(name,category,kind,unit,stock,cost,price) AS (
     ('Seda caixa', 'TABACARIA', 'simple', 'un', 10, 0, 600)
 )
 INSERT INTO products(name,category,kind,unit,stock,min_stock,cost,price)
-SELECT i.name, i.category, i.kind, i.unit, i.stock, 0, i.cost, i.price
+SELECT i.name, i.category, i.kind, i.unit, i.stock, 0, CASE WHEN i.kind='ingredient' THEN 0 ELSE CAST(ROUND(i.price * 0.70) AS INTEGER) END, i.price
 FROM incoming AS i
 WHERE NOT EXISTS (
  SELECT 1 FROM products AS p WHERE p.name=i.name AND p.category=i.category
