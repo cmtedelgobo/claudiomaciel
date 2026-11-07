@@ -1,3 +1,34 @@
+# ATUALIZACAO V1.1.0 — CATALOGO DO CLAUDIO
+
+Este pacote contem os arquivos COMPLETOS do projeto, para substituir os arquivos existentes no repositorio GitHub (enviar o CONTEUDO da pasta, mantendo `functions/api/[[path]].js`).
+
+**Importante: o commit GitHub nao executa SQL no D1.** O banco `crm-conveniencia-db` que ja existe **nao deve ser apagado**. O painel de cadastro e as vendas so enxergarao os novos produtos depois de executar os scripts no D1 de producao.
+
+## Atualizar o banco existente (nao executar schema.sql de novo)
+
+Na Cloudflare > D1 > crm-conveniencia-db > Console:
+
+1. Copiar o CONTEUDO INTEIRO de `atualizar_d1_produtos.sql` e executar. Sao **45 produtos novos**: 6 cervejas, 5 refrigerantes, 5 destilados, 4 salgadinhos, 5 doces, 4 cigarros, 6 lanches, 5 porcoes e 5 de tabacaria. Cada item com quantidade 10 (destilados: 9.000 ml) e custo 0 ainda nao informado. O nome/categoria determina se ja existe; reexecutar nao duplica.
+2. Copiar `atualizar_d1_doses.sql` e executar. Cria 9 apresentacoes: 5 garrafas de 900 ml e 4 doses de 50 ml. O preco da dose de Dreher ainda nao foi informado.
+3. Opcionalmente executar `arquivar_modelos_opcional.sql` para OCULTAR, sem excluir, os 10 produtos provisórios nao utilizados.
+4. Conferir com `SELECT category, COUNT(*) quantidade FROM products WHERE active=1 GROUP BY category ORDER BY category;`.
+
+**Se o Console nao executar um bloco WITH/INSERT, use o Wrangler CLI com `wrangler d1 execute crm-conveniencia-db --remote --file=atualizar_d1_produtos.sql` e depois o de doses. O comando deve ser rodado na pasta do projeto em uma instalacao Node/Wrangler configurada.**
+
+## Regras
+
+- `REFRIGERANTES` e nova categoria no PDV e no estoque.
+- Doses e garrafas do mesmo destilado consomem o mesmo saldo em ml. A unidade de estoque de 900 ml e um frasco; 9.000 ml representam 10 frascos.
+- Preco de venda esta em CENTAVOS no SQL: R$ 10,00 = `1000`.
+- `Seda unidade` e `Seda caixa` foram cadastrados como itens independentes (10 cada) pois nao foi informada a quantidade de sedas por caixa.
+- Snacks sem gramagem informada foram cadastrados sem tamanho e podem ser editados depois.
+- Lanches e porcoes estao como produtos simples com 10 unidades provisórias; para baixa por ingredientes sera necessario configurar fichas tecnicas futuramente.
+- Produtos com precos reais, mas custo 0, nao fornecem margem de lucro confiavel ate registrar os custos.
+- Como o site apresentou erro **523**, confirme em Cloudflare Pages > Deployments se o deploy foi realmente bem-sucedido. O D1 nao corrige sozinho o erro 523.
+- **Nao usar clientes reais sem protecao de acesso**. Sem login, qualquer pessoa que encontre a URL podera acessar os dados se nao houver Cloudflare Access ou equivalente.
+
+---
+
 # CRM CONVENIÊNCIA · Versão inicial 1.0.0
 
 ERP web para a conveniência/bar do Cláudio. Tema da **opção 10**: azul royal, azul escuro, prata e branco.
@@ -24,12 +55,12 @@ ERP web para a conveniência/bar do Cláudio. Tema da **opção 10**: azul royal
 
 Importante: **não** arraste o ZIP diretamente para o repositório esperando que o GitHub o descompacte. Faça upload dos arquivos/pastas extraídos.
 
-## 2. Criar o banco de dados D1
+## 2. Criar o banco de dados D1 (apenas instalacao nova)
 
 1. Acesse Cloudflare > **Storage & databases** > **D1** > **Create database**.
 2. Nome sugerido: `crm-conveniencia-db`.
 3. Abra o banco > **Console**. Execute o conteúdo completo de `schema.sql`.
-4. Depois execute o conteúdo completo de `seed.sql`, **uma vez** (ele usa `WHERE NOT EXISTS` para evitar duplicatas dos modelos iniciais).
+4. Em instalacoes novas, execute `atualizar_d1_produtos.sql` e `atualizar_d1_doses.sql`. `seed.sql` e apenas informativo nesta versao.
 5. O schema contém a tabela `suppliers`: fornecedores já fazem parte desta versão.
 
 O banco deve ser criado e preenchido no ambiente **remoto de produção** vinculado ao Pages. Criar o D1 não executa automaticamente os arquivos `.sql`.
