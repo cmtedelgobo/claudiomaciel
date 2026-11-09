@@ -20,3 +20,13 @@
 
 ## Nota sobre PDFs
 Os relatórios de tabelas e fechamento usam a impressão do navegador com estilo e logomarca, permitindo Salvar como PDF. O PDF compartilhável de comanda usa layout próprio, com nome/endereço/telefone em texto; a imagem da logomarca aparece nos relatórios impressos e a logomarca poderá ser adicionada ao PDF compartilhável numa melhoria futura.
+
+## V1.4.0 — Doses em ml e fechamento diário/semanal
+1. **Antes de publicar:** faça backup JSON pelo CRM e backup do banco D1.
+2. Execute **migracao_v1_4.sql UMA ÚNICA VEZ no D1 de produção**. A migração acrescenta apenas a coluna `bottle_volume` e NÃO apaga dados. Não execute `schema.sql` no banco já existente.
+3. Publique todos os arquivos do ZIP no GitHub/Cloudflare Pages; atualize a página com Ctrl+F5.
+4. Em ESTOQUE > DESTILADOS, abra **Editar** em cada destilado, indique o volume exato da garrafa e **confira o estoque físico em garrafas** antes de salvar. Ao salvar, o estoque é gravado em ml e o custo por garrafa é convertido em custo unitário de ml. Nenhuma conversão automática é feita no D1 antes dessa conferência.
+5. Confira ESTOQUE > DOSES > Caixas / doses: apresentação Dose 50 ml deve ter consumo **50** para cada venda. Para uma garrafa 900 ml a venda sem apresentação consome 900 ml. Evite cadastrar uma dose como outro produto independente.
+6. No menu FINANCEIRO agora há Fechamento do dia, da semana (segunda a domingo) e do mês; qualquer período tem ranking, vendas, entradas, saídas e impressão/PDF. Saldo de fiado atual é acumulado geral, não somente do período. Contas a pagar são agrupadas pela data de vencimento.
+7. **Atenção:** se os destilados já estavam cadastrados como `ml` e a quantidade aparece como 10, isso pode representar 10 ml, não 10 garrafas. Verifique a contagem física e corrija para a quantidade real em garrafas no formulário. As vendas históricas permanecem intactas.
+8. Não execute a migração novamente: `ALTER TABLE ... ADD COLUMN` falharia por coluna existente.

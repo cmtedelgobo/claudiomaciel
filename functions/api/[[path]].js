@@ -14,7 +14,7 @@ function needs(b,k){if(!b||b[k]===undefined||b[k]===null)throw Error('Campo obri
 async function components(db,productId,presentationId,quantity){
   let p=await get(db,'SELECT * FROM products WHERE id=? AND active=1',productId);if(!p)throw Error('Produto não encontrado ou inativo');
   if(quantity<1||quantity>10000)throw Error('Quantidade inválida');
-  let unitPrice=p.price,units=1,pres=null;
+  let unitPrice=p.price,units=(p.category==='DESTILADOS'&&p.unit==='ml'&&p.bottle_volume?p.bottle_volume:1),pres=null;
   if(presentationId){pres=await get(db,'SELECT * FROM presentations WHERE id=? AND product_id=? AND active=1',presentationId,productId);if(!pres)throw Error('Apresentação inválida');unitPrice=pres.price;units=pres.quantity;}
   if(unitPrice<=0)throw Error('Defina um preço de venda maior que zero para '+p.name);
   let list=[],unitCost=0;
@@ -29,7 +29,7 @@ async function components(db,productId,presentationId,quantity){
   return {p,pres,unitPrice,unitCost,components:Array.from(merged).map(([id,qty])=>({id,qty})),quantity};
 }
 const inventoryStmts=(db,parts,sign,reason,ref)=>parts.map(a=>sql(db,'UPDATE products SET stock=stock+? WHERE id=?',sign*a.qty,a.id)).concat(parts.map(a=>sql(db,'INSERT INTO stock_movements(product_id,change_qty,reason,reference) VALUES(?,?,?,?)',a.id,sign*a.qty,reason,ref)));
-async function itemParts(db,item){let p=await get(db,'SELECT kind FROM products WHERE id=?',item.product_id);let units=1;
+async function itemParts(db,item){let p=await get(db,'SELECT kind,category,unit,bottle_volume FROM products WHERE id=?',item.product_id);let units=p?.category==='DESTILADOS'&&p.unit==='ml'&&p.bottle_volume?p.bottle_volume:1;
   if(item.presentation_id){let v=await get(db,'SELECT quantity FROM presentations WHERE id=?',item.presentation_id);if(v)units=v.quantity;}
   if(p?.kind==='recipe'){let rec=await all(db,'SELECT ingredient_id,quantity FROM recipes WHERE product_id=?',item.product_id);return rec.map(r=>({id:r.ingredient_id,qty:r.quantity*item.quantity}));}
   return [{id:item.product_id,qty:units*item.quantity}];
@@ -59,7 +59,9 @@ export async function onRequest(context){
       needs(b,'name');let kind=str(b.kind||'simple');if(!['simple','ingredient','recipe'].includes(kind))throw Error('Tipo inválido');
       let unit=str(b.unit||'un');if(!['un','ml','g'].includes(unit))throw Error('Unidade inválida');
       const cost=n(b.cost),price=n(b.price),min=n(b.min_stock);if(cost<0||price<0||min<0)throw Error('Valores inválidos');
-      let r=await run(db,'INSERT INTO products(name,category,kind,unit,stock,min_stock,cost,price,favorite) VALUES(?,?,?,?,?,?,?,?,?)',str(b.name),str(b.category||'OUTROS'),kind,unit,Math.max(0,n(b.stock)),min,cost,price,b.favorite?1:0);return json({id:r.meta.last_row_id});
+      const isDist=str(b.category)==='DESTILADOS',volume=n(b.bottle_volume);if(isDist&&(volume<50||volume>10000))throw Error('Volume da garrafa inválido');
+      const newUnit=isDist?'ml':unit,mult=isDist?volume:1,rawStock=Number(b.stock),rawMin=Number(b.min_stock);if(!Number.isFinite(rawStock)||!Number.isFinite(rawMin)||rawStock<0||rawMin<0||Math.abs(rawStock*mult-Math.round(rawStock*mult))>1e-6)throw Error('Estoque inválido');
+      let r=await run(db,'INSERT INTO products(name,category,kind,unit,stock,min_stock,cost,price,favorite,bottle_volume) VALUES(?,?,?,?,?,?,?,?,?,?)',str(b.name),str(b.category||'OUTROS'),kind,newUnit,Math.round(rawStock*mult),Math.round(rawMin*mult),isDist?Math.round(cost/volume):cost,price,b.favorite?1:0,isDist?volume:0);return json({id:r.meta.last_row_id});
     }
     if(path==='products'&&method==='DELETE'){
       const id=idOf(b.id),p=await get(db,'SELECT * FROM products WHERE id=?',id);
@@ -72,9 +74,13 @@ export async function onRequest(context){
     if(path==='products'&&method==='PUT'){
       let id=idOf(b.id),p=await get(db,'SELECT * FROM products WHERE id=?',id);if(!p)throw Error('Produto inexistente');
       let price=n(b.price),cost=n(b.cost);if(price<0||cost<0)throw Error('Valores inválidos');
-      const desired=b.stock===undefined?p.stock:n(b.stock),delta=desired-p.stock;
+      const category=str(b.category||p.category),isDist=category==='DESTILADOS',volume=n(b.bottle_volume||p.bottle_volume);
+      if(isDist&&(volume<50||volume>10000))throw Error('Informe volume válido para a garrafa');
+      const mult=isDist?volume:1,rawStock=Number(b.stock),rawMin=Number(b.min_stock);
+      if(!Number.isFinite(rawStock)||!Number.isFinite(rawMin)||rawStock<0||rawMin<0||Math.abs(rawStock*mult-Math.round(rawStock*mult))>1e-6)throw Error('Quantidade inválida');
+      const desired=Math.round(rawStock*mult),delta=desired-p.stock,newCost=isDist?Math.round(cost/volume):cost;
       if(desired<0||desired>10000000)throw Error('Estoque inválido');
-      await db.batch([sql(db,'UPDATE products SET name=?,category=?,price=?,cost=?,min_stock=?,active=?,favorite=? WHERE id=?',str(b.name||p.name),str(b.category||p.category),price,cost,Math.max(0,n(b.min_stock)),b.active===false?0:1,b.favorite?1:0,id),...(delta?[sql(db,'UPDATE products SET stock=stock+? WHERE id=?',delta,id),sql(db,'INSERT INTO stock_movements(product_id,change_qty,reason) VALUES(?,?,?)',id,delta,'Edição de produto')]:[])]);
+      await db.batch([sql(db,'UPDATE products SET name=?,category=?,unit=?,bottle_volume=?,price=?,cost=?,min_stock=?,active=?,favorite=?,stock=? WHERE id=?',str(b.name||p.name),category,isDist?'ml':p.unit,isDist?volume:0,price,newCost,Math.round(rawMin*mult),b.active===false?0:1,b.favorite?1:0,desired,id),...(delta?[sql(db,'INSERT INTO stock_movements(product_id,change_qty,reason) VALUES(?,?,?)',id,delta,'Edição de produto / conversão de garrafas em ml')]:[])]);
       return json({ok:true});
     }
     if(path==='suppliers'&&method==='GET')return json(await all(db,'SELECT * FROM suppliers ORDER BY name'));
@@ -236,14 +242,23 @@ export async function onRequest(context){
     if(path==='sales'&&method==='GET')return json(await all(db,'SELECT s.*,c.name customer_name FROM sales s LEFT JOIN customers c ON c.id=s.customer_id ORDER BY s.id DESC LIMIT 150'));
     if(path==='movements'&&method==='GET')return json(await all(db,'SELECT m.*,p.name product_name,p.unit FROM stock_movements m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 200'));
     if(path==='report'&&method==='GET'){
-      let month=str(url.searchParams.get('month'));if(!monthValid(month))throw Error('Mês inválido');let start=month+'-01',end=new Date(Date.UTC(+month.slice(0,4),+month.slice(5,7),1)).toISOString().slice(0,10);
+      let month=str(url.searchParams.get('month')),period=str(url.searchParams.get('period')||'month');
+      let start,end,label;
+      if(period==='month'){
+        if(!monthValid(month))throw Error('Mês inválido');start=month+'-01';end=new Date(Date.UTC(+month.slice(0,4),+month.slice(5,7),1)).toISOString().slice(0,10);label=month;
+      }else{
+        const day=str(url.searchParams.get('date'));if(!validDate(day)||!['day','week'].includes(period))throw Error('Data ou período inválido');
+        let dt=new Date(day+'T12:00:00Z');if(period==='week')dt.setUTCDate(dt.getUTCDate()-((dt.getUTCDay()+6)%7));
+        start=dt.toISOString().slice(0,10);dt.setUTCDate(dt.getUTCDate()+(period==='week'?7:1));end=dt.toISOString().slice(0,10);
+        let last=new Date(dt.getTime()-86400000).toISOString().slice(0,10);label=period==='day'?start:`${start} a ${last}`;
+      }
       let [sales,items,cash,payables,debts]=await Promise.all([
         get(db,"SELECT COALESCE(SUM(total),0) gross,COUNT(*) count,COALESCE(SUM(CASE WHEN payment_method='fiado' THEN total ELSE 0 END),0) credit FROM sales WHERE status='active' AND date(created_at)>=? AND date(created_at)<?",start,end),
         all(db,"SELECT name,SUM(qty) qty,SUM(revenue) revenue,SUM(cost) cost FROM (SELECT i.name,i.quantity qty,i.quantity*i.unit_price revenue,i.quantity*i.unit_cost cost FROM sale_items i JOIN sales s ON s.id=i.sale_id WHERE s.status='active' AND date(s.created_at)>=? AND date(s.created_at)<? UNION ALL SELECT m.name||' (avulso)',m.quantity,m.quantity*m.unit_price,m.quantity*m.unit_cost FROM manual_sale_items m JOIN sales s ON s.id=m.sale_id WHERE s.status='active' AND date(s.created_at)>=? AND date(s.created_at)<?) GROUP BY name ORDER BY qty DESC",start,end,start,end),
         get(db,"SELECT COALESCE(SUM(CASE WHEN type IN ('income','opening') THEN amount ELSE -amount END),0) net,COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0) income,COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0) expense FROM cash_entries WHERE date(created_at)>=? AND date(created_at)<?",start,end),
         get(db,'SELECT COALESCE(SUM(amount),0) obligations,COALESCE(SUM(paid_amount),0) paid FROM payables WHERE due_date>=? AND due_date<?',start,end),
         get(db,'SELECT COALESCE(SUM(amount),0) balance FROM customer_ledger')]);
-      return json({month,sales,items,cash,payables,debts});
+      return json({month:month||start,label,period,start,end,sales,items,cash,payables,debts});
     }
     return fail('Rota não encontrada: '+path,404);
   }catch(e){return fail(e?.message||'Falha interna',/SQLITE|D1_ERROR/.test(e?.message||'')?500:400)}
