@@ -30,3 +30,10 @@ Os relatórios de tabelas e fechamento usam a impressão do navegador com estilo
 6. No menu FINANCEIRO agora há Fechamento do dia, da semana (segunda a domingo) e do mês; qualquer período tem ranking, vendas, entradas, saídas e impressão/PDF. Saldo de fiado atual é acumulado geral, não somente do período. Contas a pagar são agrupadas pela data de vencimento.
 7. **Atenção:** se os destilados já estavam cadastrados como `ml` e a quantidade aparece como 10, isso pode representar 10 ml, não 10 garrafas. Verifique a contagem física e corrija para a quantidade real em garrafas no formulário. As vendas históricas permanecem intactas.
 8. Não execute a migração novamente: `ALTER TABLE ... ADD COLUMN` falharia por coluna existente.
+
+## V1.4.1 — Desativar apresentações antigas
+- Em ESTOQUE > Caixas / doses, botão Desativar por apresentação, com confirmação.
+- Desativação lógica (`presentations.active=0`), sem exclusão física: mantém os vínculos e histórico de venda, não altera estoque.
+- Apresentações desativadas deixam de aparecer no PDV e nas novas comandas.
+- Não precisa executar migração SQL adicional se o D1 já está na v1.4.0.
+- Faça backup antes de publicar. Publique todos os arquivos no GitHub e atualize com Ctrl+F5.

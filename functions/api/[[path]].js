@@ -100,6 +100,13 @@ export async function onRequest(context){
       let id=idOf(b.product_id),q=n(b.quantity),price=n(b.price);if(!str(b.name)||q<=0||price<0)throw Error('Apresentação inválida');
       const r=await run(db,'INSERT INTO presentations(product_id,name,quantity,price) VALUES(?,?,?,?)',id,str(b.name),q,price);return json({id:r.meta.last_row_id});
     }
+    if(path==='presentations'&&method==='DELETE'){
+      const id=idOf(b.id);
+      const existing=await get(db,'SELECT id,active FROM presentations WHERE id=?',id);
+      if(!existing)throw Error('Apresentação não encontrada');
+      await run(db,'UPDATE presentations SET active=0 WHERE id=?',id);
+      return json({ok:true,archived:true});
+    }
     if(path==='recipes'&&method==='GET')return json(await all(db,'SELECT r.*,p.name product_name,i.name ingredient_name FROM recipes r JOIN products p ON p.id=r.product_id JOIN products i ON i.id=r.ingredient_id ORDER BY p.name'));
     if(path==='recipes'&&method==='POST'){
       let pid=idOf(b.product_id),iid=idOf(b.ingredient_id),qty=n(b.quantity);
